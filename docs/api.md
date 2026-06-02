@@ -2,7 +2,7 @@
 
 ## 1. API 概述
 
-本文档描述智学伴侣后端 API 设计。后端使用 Python FastAPI 实现，前端 React 通过 HTTP JSON 接口访问后端服务，后端再根据业务需要访问数据库和 MiniMax 大模型 API。
+本文档描述智学伴侣后端 API 设计。后端使用 Python FastAPI 实现，前端 React 通过 HTTP JSON 接口访问后端服务，后端再根据业务需要访问数据库、MiniMax 大模型 API 和 C++ 文件处理服务。
 
 基础路径：
 
@@ -41,6 +41,8 @@
 | 200 | 请求成功 |
 | 201 | 创建成功 |
 | 400 | 请求参数错误 |
+| 401 | 未登录或 Token 无效 |
+| 403 | 无权限（角色不匹配） |
 | 404 | 资源不存在 |
 | 422 | 参数校验失败 |
 | 500 | 服务内部错误 |
@@ -54,24 +56,212 @@
 2026-06-01T20:00:00+08:00
 ```
 
-### 2.3 优先级枚举
+### 2.3 认证方式
+
+除注册和登录接口外，所有接口均需在请求头中携带 JWT 令牌：
 
 ```text
-low
-medium
-high
+Authorization: Bearer <token>
 ```
 
-### 2.4 任务状态枚举
+### 2.4 角色枚举
 
 ```text
-pending
-done
+student   // 学生
+teacher   // 教师
 ```
 
-## 3. 智能问答 API
+### 2.5 作业状态枚举
 
-### 3.1 发送问题
+```text
+open      // 进行中（学生可提交）
+closed    // 已关闭（截止或教师手动关闭）
+```
+
+### 2.6 提交状态枚举
+
+```text
+submitted  // 已提交
+```
+
+## 3. 认证 API
+
+### 3.1 学生注册
+
+接口：
+
+```http
+POST /api/auth/register/student
+```
+
+功能说明：
+
+学生注册账号，填写学号、姓名、班级和密码。
+
+请求体：
+
+```json
+{
+  "username": "20240101",
+  "name": "张三",
+  "class_name": "计算机 2401 班",
+  "password": "your_password"
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| username | string | 是 | 学号，登录时使用 |
+| name | string | 是 | 真实姓名 |
+| class_name | string | 是 | 班级名称 |
+| password | string | 是 | 登录密码（长度 6-32 位） |
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "user_001",
+    "username": "20240101",
+    "name": "张三",
+    "role": "student"
+  },
+  "message": "registered"
+}
+```
+
+### 3.2 教师注册
+
+接口：
+
+```http
+POST /api/auth/register/teacher
+```
+
+功能说明：
+
+教师注册账号，填写工号、姓名、所教课程和密码。
+
+请求体：
+
+```json
+{
+  "username": "T20240001",
+  "name": "李老师",
+  "courses": ["高等数学", "线性代数"],
+  "password": "your_password"
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| username | string | 是 | 工号，登录时使用 |
+| name | string | 是 | 真实姓名 |
+| courses | array | 是 | 所教课程列表 |
+| password | string | 是 | 登录密码（长度 6-32 位） |
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "user_002",
+    "username": "T20240001",
+    "name": "李老师",
+    "role": "teacher"
+  },
+  "message": "registered"
+}
+```
+
+### 3.3 登录
+
+接口：
+
+```http
+POST /api/auth/login
+```
+
+功能说明：
+
+学生和教师统一登录入口，输入用户名和密码，返回 JWT 令牌和用户角色。
+
+请求体：
+
+```json
+{
+  "username": "20240101",
+  "password": "your_password"
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| username | string | 是 | 学号或工号 |
+| password | string | 是 | 登录密码 |
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expires_in": 86400,
+    "user": {
+      "id": "user_001",
+      "username": "20240101",
+      "name": "张三",
+      "role": "student"
+    }
+  },
+  "message": "ok"
+}
+```
+
+### 3.4 获取当前用户信息
+
+接口：
+
+```http
+GET /api/auth/me
+```
+
+功能说明：
+
+返回当前已登录用户的基本信息。需携带 JWT 令牌。
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "user_001",
+    "username": "20240101",
+    "name": "张三",
+    "role": "student",
+    "extra": {
+      "class_name": "计算机 2401 班"
+    }
+  },
+  "message": "ok"
+}
+```
+
+## 4. 智能问答 API
+
+> 权限：学生端（role = student）
+
+### 4.1 发送问题
 
 接口：
 
@@ -81,7 +271,7 @@ POST /api/chat
 
 功能说明：
 
-向 AI 学习伴侣发送一个学习问题，由后端调用 MiniMax 进行生成、批改或语义分析 生成回答。
+向 AI 学习伴侣发送一个学习问题，由后端调用 MiniMax 生成回答。
 
 请求体：
 
@@ -118,7 +308,7 @@ POST /api/chat
 }
 ```
 
-### 3.2 获取会话历史
+### 4.2 获取会话历史
 
 接口：
 
@@ -162,77 +352,33 @@ GET /api/chat/sessions/{session_id}/messages
 }
 ```
 
-## 4. 作业提醒 API
+## 5. 学生端作业 API
 
-### 4.1 创建作业提醒
+> 权限：学生端（role = student）
 
-接口：
-
-```http
-POST /api/tasks
-```
-
-功能说明：
-
-创建一条作业或学习任务提醒。
-
-请求体：
-
-```json
-{
-  "title": "完成高等数学第 3 章习题",
-  "course": "高等数学",
-  "description": "完成课后 1-10 题，重点复习导数应用。",
-  "due_at": "2026-06-05T23:59:00+08:00",
-  "priority": "high"
-}
-```
-
-响应示例：
-
-```json
-{
-  "success": true,
-  "data": {
-    "id": "task_001",
-    "title": "完成高等数学第 3 章习题",
-    "course": "高等数学",
-    "description": "完成课后 1-10 题，重点复习导数应用。",
-    "due_at": "2026-06-05T23:59:00+08:00",
-    "priority": "high",
-    "status": "pending",
-    "created_at": "2026-06-01T20:00:00+08:00",
-    "updated_at": "2026-06-01T20:00:00+08:00"
-  },
-  "message": "created"
-}
-```
-
-### 4.2 获取任务列表
+### 5.1 获取作业列表
 
 接口：
 
 ```http
-GET /api/tasks
+GET /api/student/assignments
 ```
 
 功能说明：
 
-查询作业提醒列表。
+获取教师发布的作业列表，可按课程和状态筛选。
 
 查询参数：
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| status | string | 否 | pending 或 done |
 | course | string | 否 | 按课程筛选 |
-| priority | string | 否 | low、medium、high |
-| due_before | string | 否 | 查询指定时间前截止的任务 |
+| status | string | 否 | open 或 closed |
 
 请求示例：
 
 ```http
-GET /api/tasks?status=pending&priority=high
+GET /api/student/assignments?status=open
 ```
 
 响应示例：
@@ -243,12 +389,12 @@ GET /api/tasks?status=pending&priority=high
   "data": {
     "items": [
       {
-        "id": "task_001",
-        "title": "完成高等数学第 3 章习题",
-        "course": "高等数学",
-        "due_at": "2026-06-05T23:59:00+08:00",
-        "priority": "high",
-        "status": "pending"
+        "id": "assignment_001",
+        "title": "操作系统进程管理作业",
+        "course": "操作系统",
+        "due_at": "2026-06-10T23:59:00+08:00",
+        "status": "open",
+        "submitted": false
       }
     ],
     "total": 1
@@ -257,12 +403,14 @@ GET /api/tasks?status=pending&priority=high
 }
 ```
 
-### 4.3 获取任务详情
+> `submitted` 表示当前登录学生是否已提交该作业。
+
+### 5.2 获取作业详情
 
 接口：
 
 ```http
-GET /api/tasks/{task_id}
+GET /api/student/assignments/{assignment_id}
 ```
 
 响应示例：
@@ -271,36 +419,78 @@ GET /api/tasks/{task_id}
 {
   "success": true,
   "data": {
-    "id": "task_001",
-    "title": "完成高等数学第 3 章习题",
-    "course": "高等数学",
-    "description": "完成课后 1-10 题，重点复习导数应用。",
-    "due_at": "2026-06-05T23:59:00+08:00",
-    "priority": "high",
-    "status": "pending",
-    "created_at": "2026-06-01T20:00:00+08:00",
-    "updated_at": "2026-06-01T20:00:00+08:00"
+    "id": "assignment_001",
+    "title": "操作系统进程管理作业",
+    "course": "操作系统",
+    "description": "请结合课堂内容，分析进程与线程的区别及调度机制，不少于 800 字。",
+    "due_at": "2026-06-10T23:59:00+08:00",
+    "status": "open",
+    "attachment_url": "/files/assignment_001_topic.pdf",
+    "submitted": false
   },
   "message": "ok"
 }
 ```
 
-### 4.4 更新任务
+### 5.3 提交作业
 
 接口：
 
 ```http
-PATCH /api/tasks/{task_id}
+POST /api/student/assignments/{assignment_id}/submit
 ```
 
-请求体：
+功能说明：
+
+学生提交作业内容，支持纯文本提交或文件上传（二选一）。文件提交时由 C++ 文件处理服务提取文本。
+
+请求体（文本提交，Content-Type: application/json）：
 
 ```json
 {
-  "title": "完成高等数学第 3 章全部习题",
-  "priority": "medium",
-  "status": "pending"
+  "content": "进程是程序执行的实体，包含程序计数器、寄存器和变量等资源...",
+  "submit_type": "text"
 }
+```
+
+请求体（文件提交，Content-Type: multipart/form-data）：
+
+```text
+submit_type=file
+file=<二进制文件内容，支持 PDF、TXT、DOC，最大 10 MB>
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| submit_type | string | 是 | text（文本） 或 file（文件） |
+| content | string | text 时必填 | 作业正文 |
+| file | file | file 时必填 | 作业文件 |
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "submission_001",
+    "assignment_id": "assignment_001",
+    "student_id": "user_001",
+    "submit_type": "file",
+    "submitted_at": "2026-06-08T14:30:00+08:00",
+    "status": "submitted"
+  },
+  "message": "submitted"
+}
+```
+
+### 5.4 查看本人提交详情
+
+接口：
+
+```http
+GET /api/student/assignments/{assignment_id}/my-submission
 ```
 
 响应示例：
@@ -309,63 +499,22 @@ PATCH /api/tasks/{task_id}
 {
   "success": true,
   "data": {
-    "id": "task_001",
-    "title": "完成高等数学第 3 章全部习题",
-    "course": "高等数学",
-    "description": "完成课后 1-10 题，重点复习导数应用。",
-    "due_at": "2026-06-05T23:59:00+08:00",
-    "priority": "medium",
-    "status": "pending",
-    "updated_at": "2026-06-01T21:00:00+08:00"
+    "id": "submission_001",
+    "assignment_id": "assignment_001",
+    "submit_type": "file",
+    "file_url": "/files/submission_001.pdf",
+    "submitted_at": "2026-06-08T14:30:00+08:00",
+    "status": "submitted"
   },
-  "message": "updated"
+  "message": "ok"
 }
 ```
 
-### 4.5 标记任务完成
+## 6. 知识点总结 API
 
-接口：
+> 权限：学生端（role = student）
 
-```http
-POST /api/tasks/{task_id}/complete
-```
-
-响应示例：
-
-```json
-{
-  "success": true,
-  "data": {
-    "id": "task_001",
-    "status": "done"
-  },
-  "message": "completed"
-}
-```
-
-### 4.6 删除任务
-
-接口：
-
-```http
-DELETE /api/tasks/{task_id}
-```
-
-响应示例：
-
-```json
-{
-  "success": true,
-  "data": {
-    "id": "task_001"
-  },
-  "message": "deleted"
-}
-```
-
-## 5. 知识点总结 API
-
-### 5.1 创建知识点总结
+### 6.1 创建知识点总结
 
 接口：
 
@@ -375,7 +524,7 @@ POST /api/summaries
 
 功能说明：
 
-提交笔记、课堂内容或知识主题，由后端调用 MiniMax 进行生成、批改或语义分析 生成结构化总结。
+提交笔记、课堂内容或知识主题，由后端调用 MiniMax 生成结构化总结。
 
 请求体：
 
@@ -428,7 +577,7 @@ POST /api/summaries
 }
 ```
 
-### 5.2 获取总结列表
+### 6.2 获取总结列表
 
 接口：
 
@@ -463,7 +612,7 @@ GET /api/summaries
 }
 ```
 
-### 5.3 获取总结详情
+### 6.3 获取总结详情
 
 接口：
 
@@ -493,7 +642,7 @@ GET /api/summaries/{summary_id}
 }
 ```
 
-### 5.4 删除总结
+### 6.4 删除总结
 
 接口：
 
@@ -513,9 +662,11 @@ DELETE /api/summaries/{summary_id}
 }
 ```
 
-## 6. 学生端个性化学习计划 API
+## 7. 学生端个性化学习计划 API
 
-### 6.1 生成个性化学习计划
+> 权限：学生端（role = student）
+
+### 7.1 生成个性化学习计划
 
 接口：
 
@@ -525,13 +676,12 @@ POST /api/student/learning-plans
 
 功能说明：
 
-根据学生成绩、作业完成情况、薄弱知识点和学习目标，调用 MiniMax 进行生成、批改或语义分析 生成定制化学习计划。
+根据学生成绩、作业完成情况、薄弱知识点和学习目标，调用 MiniMax 生成定制化学习计划。
 
 请求体：
 
 ```json
 {
-  "student_id": "student_001",
   "course": "高等数学",
   "goal": "两周内提升导数应用题正确率",
   "grade_records": [
@@ -560,7 +710,6 @@ POST /api/student/learning-plans
   "success": true,
   "data": {
     "id": "plan_001",
-    "student_id": "student_001",
     "course": "高等数学",
     "analysis": {
       "current_level": "基础概念掌握一般，应用题偏弱",
@@ -585,7 +734,7 @@ POST /api/student/learning-plans
 }
 ```
 
-### 6.2 获取学生学习计划列表
+### 7.2 获取学习计划列表
 
 接口：
 
@@ -597,7 +746,6 @@ GET /api/student/learning-plans
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| student_id | string | 是 | 学生 ID |
 | course | string | 否 | 课程名称 |
 | status | string | 否 | active、completed 或 archived |
 
@@ -621,9 +769,227 @@ GET /api/student/learning-plans
 }
 ```
 
-## 7. 教师端 AI 作业处理 API
+## 8. 教师端作业管理 API
 
-### 7.1 AI 批改作业
+> 权限：教师端（role = teacher）
+
+### 8.1 发布作业
+
+接口：
+
+```http
+POST /api/teacher/assignments
+```
+
+功能说明：
+
+教师发布一份作业，填写标题、课程、要求、参考答案、评分标准和截止时间。可上传作业附件（题目 PDF 等），由 C++ 文件处理服务自动解析。
+
+请求体（Content-Type: multipart/form-data）：
+
+```text
+title=操作系统进程管理作业
+course=操作系统
+description=请结合课堂内容，分析进程与线程的区别及调度机制，不少于 800 字。
+reference_answer=参考答案内容...（可选）
+rubric=满分 100 分，概念解释 30 分，过程分析 40 分，结论 30 分。（可选）
+due_at=2026-06-10T23:59:00+08:00
+attachment=<二进制文件内容，可选，支持 PDF、TXT，最大 10 MB>
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| title | string | 是 | 作业标题 |
+| course | string | 是 | 所属课程 |
+| description | string | 是 | 作业要求说明 |
+| reference_answer | string | 否 | 参考答案 |
+| rubric | string | 否 | 评分标准 |
+| due_at | string | 是 | 截止时间（ISO 8601） |
+| attachment | file | 否 | 作业题目附件 |
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "assignment_001",
+    "title": "操作系统进程管理作业",
+    "course": "操作系统",
+    "description": "请结合课堂内容，分析进程与线程的区别及调度机制，不少于 800 字。",
+    "due_at": "2026-06-10T23:59:00+08:00",
+    "status": "open",
+    "attachment_url": "/files/assignment_001_topic.pdf",
+    "created_at": "2026-06-01T20:00:00+08:00"
+  },
+  "message": "published"
+}
+```
+
+### 8.2 获取已发布作业列表
+
+接口：
+
+```http
+GET /api/teacher/assignments
+```
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| course | string | 否 | 按课程筛选 |
+| status | string | 否 | open 或 closed |
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id": "assignment_001",
+        "title": "操作系统进程管理作业",
+        "course": "操作系统",
+        "due_at": "2026-06-10T23:59:00+08:00",
+        "status": "open",
+        "submission_count": 25,
+        "total_students": 40
+      }
+    ],
+    "total": 1
+  },
+  "message": "ok"
+}
+```
+
+### 8.3 获取作业详情
+
+接口：
+
+```http
+GET /api/teacher/assignments/{assignment_id}
+```
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "assignment_001",
+    "title": "操作系统进程管理作业",
+    "course": "操作系统",
+    "description": "请结合课堂内容，分析进程与线程的区别及调度机制，不少于 800 字。",
+    "reference_answer": "参考答案内容...",
+    "rubric": "满分 100 分，概念解释 30 分，过程分析 40 分，结论 30 分。",
+    "due_at": "2026-06-10T23:59:00+08:00",
+    "status": "open",
+    "attachment_url": "/files/assignment_001_topic.pdf",
+    "submission_count": 25,
+    "created_at": "2026-06-01T20:00:00+08:00",
+    "updated_at": "2026-06-01T20:00:00+08:00"
+  },
+  "message": "ok"
+}
+```
+
+### 8.4 更新作业
+
+接口：
+
+```http
+PATCH /api/teacher/assignments/{assignment_id}
+```
+
+请求体：
+
+```json
+{
+  "description": "请结合课堂内容，分析进程与线程的区别及调度机制，不少于 1000 字。",
+  "due_at": "2026-06-12T23:59:00+08:00"
+}
+```
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "assignment_001",
+    "description": "请结合课堂内容，分析进程与线程的区别及调度机制，不少于 1000 字。",
+    "due_at": "2026-06-12T23:59:00+08:00",
+    "updated_at": "2026-06-02T10:00:00+08:00"
+  },
+  "message": "updated"
+}
+```
+
+### 8.5 关闭作业
+
+接口：
+
+```http
+POST /api/teacher/assignments/{assignment_id}/close
+```
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "assignment_001",
+    "status": "closed"
+  },
+  "message": "closed"
+}
+```
+
+### 8.6 获取作业提交列表
+
+接口：
+
+```http
+GET /api/teacher/assignments/{assignment_id}/submissions
+```
+
+功能说明：
+
+获取指定作业的所有学生提交记录。
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "assignment_id": "assignment_001",
+    "items": [
+      {
+        "id": "submission_001",
+        "student_id": "user_001",
+        "student_name": "张三",
+        "submit_type": "file",
+        "submitted_at": "2026-06-08T14:30:00+08:00",
+        "status": "submitted"
+      }
+    ],
+    "total": 25
+  },
+  "message": "ok"
+}
+```
+
+## 9. 教师端 AI 批改 API
+
+> 权限：教师端（role = teacher）
+
+### 9.1 AI 批改作业
 
 接口：
 
@@ -633,18 +999,23 @@ POST /api/teacher/assignments/{assignment_id}/grade
 
 功能说明：
 
-教师提交作业 ID、参考答案和评分标准，系统调用 MiniMax 对学生提交进行 AI 批改，生成分数、评语、扣分点和修改建议。
+教师指定提交 ID 列表，系统调用 MiniMax 对学生提交进行 AI 批改，生成分数、评语、扣分点和修改建议。若学生以文件提交，系统使用 C++ 服务预先提取的文本参与批改。
 
 请求体：
 
 ```json
 {
   "submission_ids": ["submission_001", "submission_002"],
-  "reference_answer": "参考答案内容...",
-  "rubric": "满分 100 分，概念解释 30 分，过程分析 40 分，结论 30 分。",
   "need_teacher_confirm": true
 }
 ```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| submission_ids | array | 是 | 待批改的提交 ID 列表 |
+| need_teacher_confirm | boolean | 否 | 是否需要教师二次确认（默认 true） |
 
 响应示例：
 
@@ -656,7 +1027,8 @@ POST /api/teacher/assignments/{assignment_id}/grade
     "results": [
       {
         "submission_id": "submission_001",
-        "student_id": "student_001",
+        "student_id": "user_001",
+        "student_name": "张三",
         "ai_score": 86,
         "comments": "整体思路正确，但关键概念解释不够完整。",
         "deductions": [
@@ -665,7 +1037,8 @@ POST /api/teacher/assignments/{assignment_id}/grade
             "minus": 6
           }
         ],
-        "suggestions": ["补充阻塞态与就绪态的转换条件", "增加调度算法对比"]
+        "suggestions": ["补充阻塞态与就绪态的转换条件", "增加调度算法对比"],
+        "confirmed": false
       }
     ]
   },
@@ -673,24 +1046,25 @@ POST /api/teacher/assignments/{assignment_id}/grade
 }
 ```
 
-### 7.2 AI 查重
+### 9.2 教师确认或调整批改结果
 
 接口：
 
 ```http
-POST /api/teacher/assignments/{assignment_id}/plagiarism-check
+PATCH /api/teacher/submissions/{submission_id}/grade
 ```
 
 功能说明：
 
-对指定作业的多份提交进行查重，结合文本相似度和 MiniMax 语义分析识别高度相似内容。
+教师对 AI 批改结果进行确认或手动调整最终分数。
 
 请求体：
 
 ```json
 {
-  "submission_ids": ["submission_001", "submission_002", "submission_003"],
-  "threshold": 0.8
+  "final_score": 88,
+  "confirmed": true,
+  "teacher_comment": "补充了一些关键点，酌情加分。"
 }
 ```
 
@@ -700,62 +1074,15 @@ POST /api/teacher/assignments/{assignment_id}/plagiarism-check
 {
   "success": true,
   "data": {
-    "assignment_id": "assignment_001",
-    "suspicious_pairs": [
-      {
-        "submission_a": "submission_001",
-        "submission_b": "submission_002",
-        "similarity": 0.87,
-        "risk_level": "high",
-        "similar_segments": ["对进程定义的表述高度一致", "结论段落结构相同"],
-        "ai_reason": "两份作业在观点顺序、关键句表达和例子选择上高度相似，存在参考同一来源的可能。"
-      }
-    ]
+    "submission_id": "submission_001",
+    "final_score": 88,
+    "confirmed": true
   },
-  "message": "checked"
+  "message": "updated"
 }
 ```
 
-### 7.3 作业比对
-
-接口：
-
-```http
-POST /api/teacher/assignments/{assignment_id}/compare
-```
-
-功能说明：
-
-对两份或多份作业进行 AI 比对，输出结构差异、观点差异、共同问题和改进建议。
-
-请求体：
-
-```json
-{
-  "submission_ids": ["submission_001", "submission_002"],
-  "compare_dimensions": ["structure", "concept", "expression", "conclusion"]
-}
-```
-
-响应示例：
-
-```json
-{
-  "success": true,
-  "data": {
-    "assignment_id": "assignment_001",
-    "comparison": {
-      "common_points": ["都能说明进程是程序执行过程"],
-      "differences": ["submission_001 对线程区别解释更完整", "submission_002 缺少调度相关内容"],
-      "common_issues": ["都没有结合具体场景举例"],
-      "teacher_suggestions": ["课堂上补充进程状态转换案例", "强调概念解释和例子结合"]
-    }
-  },
-  "message": "compared"
-}
-```
-
-### 7.4 获取 AI 批改报告
+### 9.3 获取批改报告
 
 接口：
 
@@ -771,6 +1098,7 @@ GET /api/teacher/assignments/{assignment_id}/grading-report
   "data": {
     "assignment_id": "assignment_001",
     "average_score": 82.5,
+    "graded_count": 25,
     "common_mistakes": ["概念解释不完整", "缺少案例分析"],
     "weak_points": ["进程状态转换", "线程共享资源"],
     "teaching_suggestions": ["建议下一节课用流程图讲解状态转换", "安排一次概念对比小测"]
@@ -779,7 +1107,115 @@ GET /api/teacher/assignments/{assignment_id}/grading-report
 }
 ```
 
-## 8. 健康检查 API
+## 10. 教师端 AI 查重与作业比对 API（合并）
+
+> 权限：教师端（role = teacher）
+
+### 10.1 触发查重与比对分析
+
+接口：
+
+```http
+POST /api/teacher/assignments/{assignment_id}/analyze
+```
+
+功能说明：
+
+对指定作业的一批提交同时执行查重和多维度比对。系统先调用 C++ 文件处理服务对提交文本进行预处理和指纹提取，再调用 MiniMax 进行语义相似度分析和比对，最终输出统一的分析报告。
+
+请求体：
+
+```json
+{
+  "submission_ids": ["submission_001", "submission_002", "submission_003"],
+  "similarity_threshold": 0.8,
+  "compare_dimensions": ["structure", "concept", "expression", "conclusion"]
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| submission_ids | array | 是 | 参与分析的提交 ID 列表 |
+| similarity_threshold | number | 否 | 相似度告警阈值，默认 0.8（0.0~1.0） |
+| compare_dimensions | array | 否 | 比对维度，默认全部（结构、概念、表达、结论） |
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "report_id": "report_001",
+    "assignment_id": "assignment_001",
+    "suspicious_pairs": [
+      {
+        "submission_a": "submission_001",
+        "student_a": "张三",
+        "submission_b": "submission_002",
+        "student_b": "李四",
+        "similarity": 0.87,
+        "risk_level": "high",
+        "similar_segments": [
+          "对进程定义的表述高度一致",
+          "结论段落结构相同"
+        ],
+        "ai_reason": "两份作业在观点顺序、关键句表达和例子选择上高度相似，存在参考同一来源的可能。"
+      }
+    ],
+    "comparison_details": [
+      {
+        "submission_id": "submission_001",
+        "student_name": "张三",
+        "strengths": ["对线程区别解释较完整", "结合了具体场景举例"],
+        "weaknesses": ["缺少调度算法对比"],
+        "dimension_scores": {
+          "structure": "完整",
+          "concept": "准确",
+          "expression": "流畅",
+          "conclusion": "一般"
+        }
+      }
+    ],
+    "common_issues": ["都没有结合具体场景举例"],
+    "teaching_suggestions": ["课堂上补充进程状态转换案例", "强调概念解释和例子结合"],
+    "created_at": "2026-06-09T10:00:00+08:00"
+  },
+  "message": "analyzed"
+}
+```
+
+### 10.2 获取分析报告
+
+接口：
+
+```http
+GET /api/teacher/assignments/{assignment_id}/analyze-report
+```
+
+功能说明：
+
+获取指定作业最近一次查重与比对分析的报告。
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "report_id": "report_001",
+    "assignment_id": "assignment_001",
+    "suspicious_pairs": [...],
+    "comparison_details": [...],
+    "common_issues": ["都没有结合具体场景举例"],
+    "created_at": "2026-06-09T10:00:00+08:00"
+  },
+  "message": "ok"
+}
+```
+
+## 11. 健康检查 API
 
 接口：
 
@@ -804,50 +1240,87 @@ GET /api/health
 }
 ```
 
-## 9. MiniMax 调用边界
-
-前端不直接调用 MiniMax 进行生成、批改或语义分析。所有大模型请求统一由后端处理。
-
-```mermaid
-sequenceDiagram
-    participant F as React 前端
-    participant B as FastAPI 后端
-    participant M as MiniMax API
-
-    F->>B: 提交问题、总结、学习计划或教师端作业处理请求
-    B->>B: 参数校验与提示词构造
-    B->>M: 使用后端 API Key 调用 MiniMax 进行生成、批改或语义分析
-    M-->>B: 返回模型结果
-    B->>B: 结果清洗与结构化
-    B-->>F: 返回统一 JSON 响应
-```
-
-## 10. 后端路由规划
+## 12. 后端路由规划
 
 | 模块 | 路由前缀 | 文件建议 |
 | --- | --- | --- |
 | 健康检查 | /api/health | app/main.py |
+| 认证（注册 / 登录） | /api/auth | app/api/routes_auth.py |
 | 智能问答 | /api/chat | app/api/routes_chat.py |
-| 作业提醒 | /api/tasks | app/api/routes_tasks.py |
+| 学生端作业管理 | /api/student/assignments | app/api/routes_student_assignments.py |
 | 知识总结 | /api/summaries | app/api/routes_summary.py |
 | 学生端个性化学习计划 | /api/student/learning-plans | app/api/routes_learning_plans.py |
-| 教师端 AI 作业处理 | /api/teacher/assignments | app/api/routes_teacher_assignments.py |
+| 教师端作业管理与发布 | /api/teacher/assignments | app/api/routes_teacher_assignments.py |
+| 教师端 AI 批改 | /api/teacher/assignments/{id}/grade | （同上文件） |
+| 教师端查重与比对 | /api/teacher/assignments/{id}/analyze | （同上文件） |
 
-## 11. 前端接口封装建议
+## 13. 前端接口封装建议
 
-前端建议将 API 调用集中放在 `src/api` 目录中。
+前端建议将 API 调用集中放在 `src/api` 目录中，并统一在请求拦截器中注入 JWT 令牌。
 
 ```ts
-export async function sendChatMessage(payload: {
-  question: string;
-  course?: string;
-  session_id?: string;
+// src/api/client.ts
+import axios from 'axios';
+
+const client = axios.create({ baseURL: '/api' });
+
+client.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+export default client;
+```
+
+```ts
+// src/api/auth.ts
+export async function loginUser(username: string, password: string) {
+  const res = await client.post('/auth/login', { username, password });
+  return res.data;
+}
+
+export async function registerStudent(payload: {
+  username: string;
+  name: string;
+  class_name: string;
+  password: string;
 }) {
-  const response = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+  const res = await client.post('/auth/register/student', payload);
+  return res.data;
+}
+```
+
+```ts
+// src/api/studentAssignments.ts
+export async function getAssignments(params?: { course?: string; status?: string }) {
+  const res = await client.get('/student/assignments', { params });
+  return res.data;
+}
+
+export async function submitAssignment(assignmentId: string, payload: FormData | { content: string; submit_type: 'text' }) {
+  const res = await client.post(`/student/assignments/${assignmentId}/submit`, payload);
+  return res.data;
+}
+```
+
+```ts
+// src/api/teacherAssignments.ts
+export async function publishAssignment(formData: FormData) {
+  const res = await client.post('/teacher/assignments', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
   });
-  return response.json();
+  return res.data;
+}
+
+export async function analyzeAssignment(assignmentId: string, payload: {
+  submission_ids: string[];
+  similarity_threshold?: number;
+  compare_dimensions?: string[];
+}) {
+  const res = await client.post(`/teacher/assignments/${assignmentId}/analyze`, payload);
+  return res.data;
 }
 ```

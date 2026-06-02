@@ -11,8 +11,9 @@
 
 ## 文档目录
 
-- [架构设计文档](docs/architecture.md)
-- [API 文档](docs/api.md)
+- [架构设计文档](docs/architecture.md) — 整体架构、功能模块、数据模型
+- [前后端接口文档](docs/api.md) — React 前端与 FastAPI 后端的 HTTP 接口
+- [Python ↔ C++ 接口文档](docs/cpp_api.md) — FastAPI 后端与 pybind11 扩展的调用接口
 
 ## 核心功能
 
