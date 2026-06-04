@@ -1,29 +1,42 @@
 # 智学伴侣 AI Campus Companion
 
-智学伴侣是一个基于 AI 的校园学习伴侣项目，分为学生端和教师端。学生端提供智能问答、作业提醒、知识点总结和个性化学习计划；教师端提供 AI 批改、查重和作业比对能力。
+智学伴侣是一个以 AI 为核心的校园学习辅助系统，分为学生端和教师端。学生端提供智能问答、作业管理、知识点总结和个性化学习计划；教师端提供 AI 批改、查重与作业比对能力。
 
 ## 技术栈
 
-- 前端：React、TypeScript、Vite
-- 后端：Python、FastAPI、uv
-- 大模型：MiniMax
-- 数据库：SQLite，后续可扩展为 PostgreSQL 或 MySQL
+| 层 | 技术 |
+|---|---|
+| 前端 | React 19、TypeScript、Vite、Tailwind CSS |
+| 后端 | Python、FastAPI、SQLAlchemy 2.0、uv |
+| 大模型 | MiniMax（abab6.5s-chat + embo-01 Embedding） |
+| 向量库 | ChromaDB（默认）/ pgvector（生产可选） |
+| 数据库 | SQLite（默认）/ PostgreSQL（生产可选） |
+| 文件处理 | C++ pybind11 扩展 |
 
-## 文档目录
+## 快速开始
 
-- [架构设计文档](docs/architecture.md) — 整体架构、功能模块、数据模型
-- [前后端接口文档](docs/api.md) — React 前端与 FastAPI 后端的 HTTP 接口
-- [Python ↔ C++ 接口文档](docs/cpp_api.md) — FastAPI 后端与 pybind11 扩展的调用接口
+```bash
+# 后端
+cp backend/.env.example backend/.env  # 填写 MINIMAX_API_KEY
+./server.sh start                     # 后台启动，日志写入 logs/backend.log
+./server.sh status                    # 查看运行状态
+
+# 前端
+cd frontend && pnpm install && pnpm dev
+```
+
+## 文档
+
+详细文档见 [docs/](docs/) 目录。
 
 ## 核心功能
 
-- 学生端智能问答：学生输入学习问题，系统调用 MiniMax 生成回答。
-- 学生端作业提醒：记录作业、截止时间、优先级和完成状态。
-- 学生端知识点总结：对课堂笔记、资料片段或学习主题生成结构化总结。
-- 学生端个性化学习计划：根据成绩、作业完成情况和薄弱知识点生成定制化学习安排。
-- 教师端 AI 批改：根据参考答案和评分标准生成分数、评语、扣分点和修改建议。
-- 教师端 AI 查重与作业比对：识别高度相似内容，辅助教师发现异常提交并分析作业差异。
+**学生端**
+- 智能问答：基于课程材料 RAG 检索 + MiniMax 回答，支持多轮会话
+- 作业管理：查看、提交作业，支持文本和文件两种方式
+- 知识点总结：对课堂内容生成结构化摘要、重难点、复习建议
+- 个性化学习计划：综合成绩、问答、测验、讨论等 8 类信号生成按天学习安排，支持进度跟踪和多轮调整
 
-## 项目定位
-
-本项目不是完整教学平台，而是一个突出 AI 能力的校园学习伴侣。学生端重点解决课后学习中的问答、提醒、总结和个性化规划需求；教师端重点解决作业批改、查重、比对和学情分析需求。
+**教师端**
+- AI 批改：根据参考答案和评分标准批量生成评分、评语、扣分点
+- 查重与作业比对：C++ 指纹粗筛 + MiniMax 语义分析，输出可疑对和多维比对报告
