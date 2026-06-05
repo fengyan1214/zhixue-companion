@@ -1,5 +1,6 @@
 """智能问答路由（课程路径版）"""
 from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -35,6 +36,34 @@ def send_message(
     save_ctx = result.pop("_save_ctx")
     background_tasks.add_task(svc.save_messages, result["session_id"], save_ctx)
     return _ok(result)
+
+
+@router.post("/student/courses/{course_id}/chat/stream")
+def stream_message(
+    course_id: str,
+    req: ChatRequest,
+    current_user=Depends(require_student),
+    db: Session = Depends(get_db),
+):
+    """
+    流式问答接口（SSE）。
+    响应为 text/event-stream，逐事件推送：
+      - meta：首个事件，包含 session_id、rag_used、references
+      - delta：文本片段，逐字推送
+      - done：流结束标志
+      - error：出错时推送（可选）
+    消息在流结束后由服务层同步持久化，客户端无需额外请求。
+    """
+    return StreamingResponse(
+        svc.stream_message(
+            course_id, current_user.id, req.question, req.session_id, req.section_id, db
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁止 Nginx 缓冲，确保逐行推送
+        },
+    )
 
 
 @router.get("/student/courses/{course_id}/chat/sessions")

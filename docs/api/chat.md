@@ -18,13 +18,13 @@
 
 ---
 
-## 1. 发送问题
+## 1. 发送问题（非流式）
 
 ```http
 POST /api/student/courses/{course_id}/chat
 ```
 
-**功能说明：** 向 AI 学习伴侣发送一个学习问题，后端先从课程材料中检索相关片段（RAG），再调用 MiniMax 生成回答。
+等待 MiniMax 生成完整回答后一次性返回，适合不需要实时渲染的场景。
 
 **请求体：**
 
@@ -74,7 +74,113 @@ POST /api/student/courses/{course_id}/chat
 
 ---
 
-## 2. 获取会话历史
+## 2. 发送问题（流式 SSE）
+
+```http
+POST /api/student/courses/{course_id}/chat/stream
+```
+
+以 **Server-Sent Events（SSE）** 格式推送，文字逐字实时出现，用于前端打字机效果。
+
+**请求体**：与非流式接口完全相同。
+
+**响应格式：** `Content-Type: text/event-stream`，每个事件为一行 `data: <JSON>\n\n`。
+
+### 事件类型
+
+**① meta 事件**（首个事件，在任何文字之前推送）
+
+```
+data: {"type":"meta","session_id":"session_001","rag_used":true,"references":[...]}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| session_id | 本次会话 ID（新会话时由后端生成） |
+| rag_used | 是否命中课程材料 |
+| references | 引用的课程材料片段列表（格式同非流式接口） |
+
+**② delta 事件**（文本片段，逐字推送，数量不定）
+
+```
+data: {"type":"delta","content":"进程"}
+
+data: {"type":"delta","content":"是资源"}
+
+data: {"type":"delta","content":"分配的基本单位..."}
+```
+
+将所有 `delta.content` 拼接即为完整回答。
+
+**③ done 事件**（流结束标志）
+
+```
+data: {"type":"done"}
+```
+
+收到 done 后连接自动关闭，消息已在后端持久化，无需额外请求。
+
+**④ error 事件**（出错时推送，可选）
+
+```
+data: {"type":"error","message":"大模型服务暂时不可用，请稍后重试"}
+```
+
+### 完整事件流示例
+
+```
+data: {"type":"meta","session_id":"abc-123","rag_used":true,"references":[{"section_title":"第一章","excerpt":"进程是..."}]}
+
+data: {"type":"delta","content":"进程"}
+
+data: {"type":"delta","content":"是资源分配"}
+
+data: {"type":"delta","content":"的基本单位，"}
+
+data: {"type":"delta","content":"线程是 CPU 调度的基本单位。"}
+
+data: {"type":"done"}
+```
+
+### 前端接入示例
+
+Axios 不支持 SSE，需用原生 `fetch` + `ReadableStream`：
+
+```typescript
+const token = localStorage.getItem('token')
+const res = await fetch(`/api/student/courses/${courseId}/chat/stream`, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  },
+  body: JSON.stringify({ question, session_id: sessionId }),
+})
+
+const reader = res.body!.getReader()
+const decoder = new TextDecoder()
+let buf = ''
+
+while (true) {
+  const { done, value } = await reader.read()
+  if (done) break
+  buf += decoder.decode(value, { stream: true })
+  const lines = buf.split('\n')
+  buf = lines.pop() ?? ''
+  for (const line of lines) {
+    if (!line.startsWith('data: ')) continue
+    const event = JSON.parse(line.slice(6))
+    if (event.type === 'meta')  { /* 保存 session_id、references */ }
+    if (event.type === 'delta') { /* 追加 event.content 到消息气泡 */ }
+    if (event.type === 'done')  { /* 结束 loading 状态 */ }
+    if (event.type === 'error') { /* 显示错误提示 */ }
+  }
+}
+```
+
+---
+
+## 3. 获取会话历史
 
 ```http
 GET /api/student/courses/{course_id}/chat/sessions/{session_id}/messages
@@ -106,14 +212,6 @@ GET /api/student/courses/{course_id}/chat/sessions/{session_id}/messages
         "id": "msg_002",
         "role": "assistant",
         "content": "进程是程序的一次执行过程...",
-        "rag_used": true,
-        "references": [
-          {
-            "section_title": "第一章：进程管理",
-            "file_name": "section_001_slides.pdf",
-            "excerpt": "进程是操作系统进行资源分配的基本单位..."
-          }
-        ],
         "created_at": "2026-06-04T20:00:02+08:00"
       }
     ]
@@ -124,7 +222,7 @@ GET /api/student/courses/{course_id}/chat/sessions/{session_id}/messages
 
 ---
 
-## 3. 获取会话列表
+## 4. 获取会话列表
 
 ```http
 GET /api/student/courses/{course_id}/chat/sessions

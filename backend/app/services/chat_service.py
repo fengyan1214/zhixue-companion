@@ -1,4 +1,5 @@
 """智能问答服务（课程路径版，支持 RAG）"""
+import json
 import logging
 import uuid
 
@@ -34,6 +35,67 @@ def _rag_retrieve(course_id: str, section_id: str | None, question: str, db: Ses
     except Exception:
         logger.warning("RAG 检索失败，降级为无上下文回答", exc_info=True)
         return []
+
+
+def stream_message(course_id: str, student_id: str, question: str,
+                   session_id: str | None, section_id: str | None, db: Session):
+    """
+    流式问答主流程，yield SSE 格式字符串。
+    事件顺序：meta → delta × N → done
+    生成器结束后同步持久化消息（客户端已收到 done，DB 写入不影响体验）。
+
+    meta 事件包含 session_id、rag_used、references，让前端无需等待流结束
+    就能知道本次会话 ID 和引用来源。
+    """
+    _require_enrollment(course_id, student_id, db)
+    session_id = session_id or str(uuid.uuid4())
+
+    # 读取历史
+    history = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.session_id == session_id, ChatMessage.course_id == course_id)
+        .order_by(ChatMessage.created_at)
+        .limit(10).all()
+    )
+    history_data = [{"role": m.role, "content": m.content} for m in history]
+
+    # RAG 检索
+    refs = _rag_retrieve(course_id, section_id, question, db)
+    rag_used = len(refs) > 0
+    course_name = _get_course_name(course_id, db)
+    context = ""
+    if refs:
+        context = "\n\n".join(
+            f"[课程材料参考] {r['section_title']}：{r['excerpt']}" for r in refs
+        )
+
+    # 1. meta 事件：session_id、rag_used、references
+    yield f"data: {json.dumps({'type': 'meta', 'session_id': session_id, 'rag_used': rag_used, 'references': refs}, ensure_ascii=False)}\n\n"
+
+    # 2. 流式 delta 事件
+    full_answer_parts: list[str] = []
+    try:
+        from app.services import minimax_client
+        for chunk in minimax_client.answer_question_stream(question, course_name, history_data, context):
+            full_answer_parts.append(chunk)
+            yield f"data: {json.dumps({'type': 'delta', 'content': chunk}, ensure_ascii=False)}\n\n"
+    except Exception:
+        logger.exception("流式问答 MiniMax 调用失败，session_id=%s", session_id)
+        yield f"data: {json.dumps({'type': 'error', 'message': '大模型服务暂时不可用，请稍后重试'}, ensure_ascii=False)}\n\n"
+
+    # 3. done 事件
+    yield 'data: {"type":"done"}\n\n'
+
+    # 4. 持久化消息（生成器结束后执行，客户端已收到 done）
+    full_answer = "".join(full_answer_parts)
+    if full_answer:
+        save_messages(session_id, {
+            "student_id": student_id,
+            "course_id": course_id,
+            "section_id": section_id,
+            "question": question,
+            "answer": full_answer,
+        })
 
 
 def send_message(course_id: str, student_id: str, question: str,

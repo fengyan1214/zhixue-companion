@@ -95,6 +95,43 @@ def _chat(system_prompt: str, user_content: str, *, temperature: float = 0.7) ->
         raise RuntimeError(f"大模型服务不可用: {e}") from e
 
 
+def _chat_stream(system_prompt: str, user_content: str, *, temperature: float = 0.7):
+    """
+    流式底层请求，逐 token yield 文本片段。
+    使用 httpx Client.stream() 上下文管理器，按行解析 SSE 格式。
+    失败时抛出 RuntimeError。
+    """
+    payload = {
+        "model": settings.minimax_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": temperature,
+        "stream": True,
+    }
+    try:
+        with _get_client().stream("POST", _BASE_URL, headers=_headers(), json=payload) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line or line == "data: [DONE]":
+                    continue
+                if line.startswith("data: "):
+                    try:
+                        data = json.loads(line[6:])
+                        delta = data["choices"][0]["delta"].get("content", "")
+                        if delta:
+                            yield delta
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+    except httpx.HTTPStatusError as e:
+        logger.error("MiniMax 流式 HTTP 错误: %s", e)
+        raise RuntimeError(f"大模型服务异常: {e.response.status_code}") from e
+    except Exception as e:
+        logger.error("MiniMax 流式调用失败: %s", e)
+        raise RuntimeError(f"大模型服务不可用: {e}") from e
+
+
 def _parse_json(text: str) -> dict | list:
     """从模型回复中提取 JSON，兼容 markdown 代码块包裹"""
     text = text.strip()
@@ -166,6 +203,28 @@ def answer_question(question: str, course: str | None, history: list[dict], cont
         return _parse_json(raw)
     except Exception:
         return {"answer": raw, "suggestions": []}
+
+
+def answer_question_stream(question: str, course: str | None, history: list[dict], context: str = ""):
+    """
+    学生智能问答（流式版本）。
+    yield 文本片段，拼接后即为完整回答。
+    prompt 不要求 JSON 格式，直接输出自然语言答案。
+    """
+    history_text = ""
+    if history:
+        history_text = "\n".join(
+            f"{'学生' if m['role'] == 'user' else 'AI'}: {m['content']}"
+            for m in history[-6:]  # 最近 3 轮
+        )
+    course_hint = f"当前课程：{course}。" if course else ""
+    context_hint = f"\n\n以下是与问题相关的课程材料，请优先基于这些内容作答：\n{context}" if context else ""
+    system = (
+        f"你是一个专业的学习助手。{course_hint}{context_hint}"
+        "请用简洁、准确的语言回答学生的问题。"
+    )
+    user = f"{history_text}\n学生问题：{question}" if history_text else question
+    yield from _chat_stream(system, user)
 
 
 def generate_summary(title: str, source_text: str, summary_type: str, course: str | None) -> dict:
